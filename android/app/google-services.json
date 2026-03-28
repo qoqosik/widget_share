@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "48249761736",
+    "project_id": "widgetshare-6a57b",
+    "storage_bucket": "widgetshare-6a57b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:48249761736:android:fc5c712cb6d9e041001afd",
+        "android_client_info": {
+          "package_name": "com.example.widget_share"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAKa22jaeLa3aevl0_9VSXoKbhpiutJJh8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
