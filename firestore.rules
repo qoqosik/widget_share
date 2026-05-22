@@ -1,0 +1,101 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function currentUserData() {
+      return get(userPath(request.auth.uid)).data;
+    }
+
+    function userExists(uid) {
+      return exists(userPath(uid));
+    }
+
+    function validNullableString(value, maxLength) {
+      return value == null || (value is string && value.size() <= maxLength);
+    }
+
+    function validUserCreate(uid) {
+      return request.resource.data.keys().hasOnly([
+          'uid',
+          'pairingCode',
+          'partnerId'
+        ])
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'pairingCode',
+          'partnerId'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.pairingCode is string
+        && request.resource.data.pairingCode.matches('^[A-Z]{5}$')
+        && request.resource.data.partnerId == null;
+    }
+
+    function isPairedWith(uid) {
+      return signedIn()
+        && userExists(request.auth.uid)
+        && currentUserData().partnerId == uid
+        && userExists(uid)
+        && get(userPath(uid)).data.partnerId == request.auth.uid;
+    }
+
+    function validWidgetCreate() {
+      return request.resource.data.keys().hasOnly([
+          'senderId',
+          'recipientId',
+          'text',
+          'image',
+          'timestamp'
+        ])
+        && request.resource.data.keys().hasAll([
+          'senderId',
+          'recipientId',
+          'timestamp'
+        ])
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.recipientId is string
+        && currentUserData().partnerId == request.resource.data.recipientId
+        && request.resource.data.timestamp == request.time
+        && validNullableString(request.resource.data.get('text', null), 5000)
+        && validNullableString(request.resource.data.get('image', null), 900000)
+        && (
+          request.resource.data.get('text', null) is string
+          || request.resource.data.get('image', null) is string
+        );
+    }
+
+    match /users/{uid} {
+      allow create: if isSelf(uid) && validUserCreate(uid);
+      allow get: if isSelf(uid) || isPairedWith(uid);
+      allow list: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /widgets/{widgetId} {
+      allow get, list: if signedIn()
+        && (
+          resource.data.senderId == request.auth.uid
+          || resource.data.recipientId == request.auth.uid
+        );
+      allow create: if signedIn() && validWidgetCreate();
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

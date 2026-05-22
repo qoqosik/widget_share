@@ -1,11 +1,12 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../models/shared_widget_data.dart';
 import '../services/firebase_service.dart';
+import '../services/home_widget_service.dart';
 
 /// Instructions, partner connection, and live widget preview.
 class AddWidgetScreen extends StatefulWidget {
@@ -17,8 +18,10 @@ class AddWidgetScreen extends StatefulWidget {
 
 class _AddWidgetScreenState extends State<AddWidgetScreen> {
   final TextEditingController _partnerCodeController = TextEditingController();
+  final HomeWidgetService _homeWidgetService = HomeWidgetService();
 
   bool _isConnecting = false;
+  String? _lastHomeWidgetPayload;
 
   String? get _currentUserId {
     try {
@@ -47,7 +50,7 @@ class _AddWidgetScreenState extends State<AddWidgetScreen> {
 
     setState(() => _isConnecting = true);
     try {
-      await FirebaseService().connectPartner(code);
+      await FirebaseService().pairWithCode(code);
       if (!mounted) return;
       _partnerCodeController.clear();
       ScaffoldMessenger.of(
@@ -66,6 +69,7 @@ class _AddWidgetScreenState extends State<AddWidgetScreen> {
   Widget _buildLatestWidgetCard(ThemeData theme) {
     final String? uid = _currentUserId;
     if (uid == null || uid.isEmpty) {
+      _queueHomeWidgetUpdate(HomeWidgetService.fallbackNoNote, type: 'empty');
       return const _WaitingForWidgetCard();
     }
 
@@ -97,45 +101,52 @@ class _AddWidgetScreenState extends State<AddWidgetScreen> {
 
             final docs = snapshot.data?.docs;
             if (docs == null || docs.isEmpty) {
+              _queueHomeWidgetUpdate(
+                HomeWidgetService.fallbackNoNote,
+                type: 'empty',
+              );
               return const _WaitingForWidgetCard();
             }
 
-            final Map<String, dynamic> data = docs.first.data();
-            final String? encodedImage = data['image'] as String?;
-
-            if (encodedImage == null || encodedImage.isEmpty) {
+            final SharedWidgetData payload = SharedWidgetData.fromMap(
+              docs.first.data(),
+            );
+            if (!payload.hasContent) {
+              _queueHomeWidgetUpdate(
+                HomeWidgetService.fallbackNoNote,
+                type: 'empty',
+              );
               return const _WaitingForWidgetCard();
             }
 
-            try {
-              final Uint8List imageBytes = base64Decode(encodedImage);
-              return _StatusCard(
-                title: 'Latest widget',
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: AspectRatio(
-                    aspectRatio: 1,
-                    child: Image.memory(
-                      imageBytes,
-                      fit: BoxFit.cover,
-                      gaplessPlayback: true,
-                    ),
-                  ),
-                ),
-              );
-            } catch (_) {
-              return _StatusCard(
-                title: 'Latest widget',
-                child: Text(
-                  'Could not decode the latest widget image.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              );
-            }
+            _queueHomeWidgetUpdate(
+              _homeWidgetTextFor(payload),
+              type: payload.contentType,
+            );
+
+            return _StatusCard(
+              title: 'Latest widget',
+              child: _LatestWidgetPreview(payload: payload),
+            );
           },
     );
+  }
+
+  void _queueHomeWidgetUpdate(String text, {required String type}) {
+    final String payloadKey = '$type::$text';
+    if (_lastHomeWidgetPayload == payloadKey) return;
+    _lastHomeWidgetPayload = payloadKey;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _homeWidgetService.updateLatestReceivedText(text, type: type);
+    });
+  }
+
+  String _homeWidgetTextFor(SharedWidgetData payload) {
+    if (payload.hasText) return payload.text!;
+    if (payload.hasImage) return HomeWidgetService.fallbackNewWidget;
+    return HomeWidgetService.fallbackNoNote;
   }
 
   Widget _buildPartnerCard(ThemeData theme) {
@@ -334,6 +345,224 @@ class _WaitingForWidgetCard extends StatelessWidget {
           color: theme.colorScheme.onSurfaceVariant,
         ),
       ),
+    );
+  }
+}
+
+class _LatestWidgetPreview extends StatelessWidget {
+  const _LatestWidgetPreview({required this.payload});
+
+  final SharedWidgetData payload;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final DecodedWidgetImage imageResult = payload.decodeImage();
+
+    if (payload.hasImage && imageResult.bytes == null) {
+      return _WidgetPreviewError(
+        message: payload.hasText
+            ? 'The image could not be shown, but the note is still here.'
+            : 'Could not show the latest widget image.',
+        child: payload.hasText ? _TextPreview(text: payload.text!) : null,
+      );
+    }
+
+    if (imageResult.bytes != null && payload.hasText) {
+      return _ImageWithTextPreview(
+        imageBytes: imageResult.bytes!,
+        text: payload.text!,
+      );
+    }
+
+    if (imageResult.bytes != null) {
+      return _ImagePreview(imageBytes: imageResult.bytes!);
+    }
+
+    if (payload.hasText) {
+      return _TextPreview(text: payload.text!);
+    }
+
+    return Text(
+      'Waiting for your first widget',
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+}
+
+class _ImagePreview extends StatelessWidget {
+  const _ImagePreview({required this.imageBytes});
+
+  final Uint8List imageBytes;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: AspectRatio(
+        aspectRatio: 1,
+        child: Image.memory(
+          imageBytes,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder:
+              (BuildContext context, Object error, StackTrace? stackTrace) {
+                return const _WidgetPreviewError(
+                  message: 'Could not show the latest widget image.',
+                );
+              },
+        ),
+      ),
+    );
+  }
+}
+
+class _ImageWithTextPreview extends StatelessWidget {
+  const _ImageWithTextPreview({required this.imageBytes, required this.text});
+
+  final Uint8List imageBytes;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: AspectRatio(
+        aspectRatio: 1,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.memory(
+              imageBytes,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              errorBuilder:
+                  (BuildContext context, Object error, StackTrace? stackTrace) {
+                    return const _WidgetPreviewError(
+                      message: 'Could not show the latest widget image.',
+                    );
+                  },
+            ),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.58),
+                  ],
+                ),
+              ),
+            ),
+            Align(
+              alignment: Alignment.bottomLeft,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  text,
+                  maxLines: 5,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    shadows: const [
+                      Shadow(
+                        color: Colors.black54,
+                        offset: Offset(0, 1),
+                        blurRadius: 4,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TextPreview extends StatelessWidget {
+  const _TextPreview({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colorScheme = theme.colorScheme;
+
+    return AspectRatio(
+      aspectRatio: 1,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colorScheme.secondaryContainer.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Center(
+            child: SingleChildScrollView(
+              child: Text(
+                text,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: colorScheme.onSecondaryContainer,
+                  fontWeight: FontWeight.w600,
+                  height: 1.25,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WidgetPreviewError extends StatelessWidget {
+  const _WidgetPreviewError({required this.message, this.child});
+
+  final String message;
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colorScheme = theme.colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: colorScheme.errorContainer,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.broken_image_outlined, color: colorScheme.error),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  message,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onErrorContainer,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (child != null) ...[const SizedBox(height: 12), child!],
+      ],
     );
   }
 }

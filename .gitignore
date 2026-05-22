@@ -50,6 +50,9 @@ app.*.map.json
 .pub/
 build/
 
+# Firebase Functions
+functions/node_modules/
+
 # Android
 android/.gradle/
 android/app/build/

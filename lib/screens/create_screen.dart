@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -15,9 +16,7 @@ class CreateScreen extends StatefulWidget {
 }
 
 class _CreateScreenState extends State<CreateScreen> {
-  static const String _senderId = 'user_1';
-  static const String _recipientId = 'user_2';
-
+  final FirebaseService _firebaseService = FirebaseService();
   Uint8List? _imageBytes;
 
   bool _isSending = false;
@@ -92,8 +91,17 @@ class _CreateScreenState extends State<CreateScreen> {
     setState(() => _imageBytes = null);
   }
 
-  Future<void> _send() async {
+  Future<void> _send(String? partnerId) async {
     if (_isSending) return;
+
+    if (partnerId == null || partnerId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Connect with your partner before sending a widget.'),
+        ),
+      );
+      return;
+    }
 
     final String trimmed = _noteController.text.trim();
     if (trimmed.isEmpty && _imageBytes == null) {
@@ -107,27 +115,55 @@ class _CreateScreenState extends State<CreateScreen> {
 
     setState(() => _isSending = true);
     try {
-      await FirebaseService().sendWidget(
-        senderId: _senderId,
-        recipientId: _recipientId,
+      await _firebaseService.sendWidget(
+        recipientId: partnerId,
         text: textPayload,
         imageBytes: _imageBytes,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Widget sent')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Widget sent')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Send failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Send failed: $e')));
     } finally {
       if (mounted) setState(() => _isSending = false);
     }
   }
 
   Widget _buildSquareContent() {
+    final TextField noteField = TextField(
+      controller: _noteController,
+      maxLines: null,
+      expands: true,
+      readOnly: _isSending,
+      textAlignVertical: TextAlignVertical.top,
+      style: TextStyle(
+        color: _imageBytes == null ? null : Colors.white,
+        fontWeight: _imageBytes == null ? null : FontWeight.w600,
+        shadows: _imageBytes == null
+            ? null
+            : const [
+                Shadow(
+                  color: Colors.black54,
+                  offset: Offset(0, 1),
+                  blurRadius: 4,
+                ),
+              ],
+      ),
+      decoration: InputDecoration(
+        hintText: _imageBytes == null ? 'Quick note…' : 'Add a note…',
+        hintStyle: TextStyle(
+          color: _imageBytes == null ? null : Colors.white70,
+        ),
+        border: InputBorder.none,
+        contentPadding: const EdgeInsets.all(16),
+      ),
+    );
+
     if (_imageBytes != null) {
       return Stack(
         fit: StackFit.expand,
@@ -140,6 +176,8 @@ class _CreateScreenState extends State<CreateScreen> {
               gaplessPlayback: true,
             ),
           ),
+          Container(color: Colors.black.withValues(alpha: 0.12)),
+          noteField,
           Positioned(
             top: 8,
             right: 8,
@@ -174,23 +212,61 @@ class _CreateScreenState extends State<CreateScreen> {
       );
     }
 
-    return TextField(
-      controller: _noteController,
-      maxLines: null,
-      expands: true,
-      readOnly: _isSending,
-      textAlignVertical: TextAlignVertical.top,
-      decoration: const InputDecoration(
-        hintText: 'Quick note…',
-        border: InputBorder.none,
-        contentPadding: EdgeInsets.all(16),
-      ),
+    return noteField;
+  }
+
+  Widget _buildPairingStatus(
+    ThemeData theme, {
+    required bool isLoading,
+    required bool hasError,
+    required bool isPaired,
+  }) {
+    final ColorScheme colorScheme = theme.colorScheme;
+
+    String message;
+    IconData icon;
+    Color color;
+
+    if (isLoading) {
+      message = 'Checking your partner connection...';
+      icon = Icons.sync;
+      color = colorScheme.onSurfaceVariant;
+    } else if (hasError) {
+      message = 'Could not load your partner connection right now.';
+      icon = Icons.error_outline;
+      color = colorScheme.error;
+    } else if (isPaired) {
+      message = 'Ready to send to your partner.';
+      icon = Icons.favorite_outline;
+      color = colorScheme.primary;
+    } else {
+      message = 'Connect with your partner on Add Widget before sending.';
+      icon = Icons.link_off;
+      color = colorScheme.onSurfaceVariant;
+    }
+
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            message,
+            style: theme.textTheme.bodySmall?.copyWith(color: color),
+          ),
+        ),
+      ],
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final ThemeData theme = Theme.of(context);
+  Widget _buildCreateContent(
+    ThemeData theme, {
+    required bool isProfileLoading,
+    required bool hasProfileError,
+    required String? partnerId,
+  }) {
+    final bool isPaired = partnerId != null && partnerId.isNotEmpty;
+    final bool canSend = !_isSending && !isProfileLoading && isPaired;
 
     return SafeArea(
       child: Padding(
@@ -210,6 +286,13 @@ class _CreateScreenState extends State<CreateScreen> {
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
+            ),
+            const SizedBox(height: 8),
+            _buildPairingStatus(
+              theme,
+              isLoading: isProfileLoading,
+              hasError: hasProfileError,
+              isPaired: isPaired,
             ),
             const SizedBox(height: 16),
             Expanded(
@@ -245,7 +328,7 @@ class _CreateScreenState extends State<CreateScreen> {
             ),
             const SizedBox(height: 12),
             FilledButton(
-              onPressed: _isSending ? null : _send,
+              onPressed: canSend ? () => _send(partnerId) : null,
               child: _isSending
                   ? SizedBox(
                       height: 22,
@@ -260,6 +343,41 @@ class _CreateScreenState extends State<CreateScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final String? uid = _firebaseService.currentUserId;
+
+    if (uid == null || uid.isEmpty) {
+      return _buildCreateContent(
+        theme,
+        isProfileLoading: false,
+        hasProfileError: true,
+        partnerId: null,
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _firebaseService.getUserProfile(uid),
+      builder:
+          (
+            BuildContext context,
+            AsyncSnapshot<DocumentSnapshot<Map<String, dynamic>>> snapshot,
+          ) {
+            final Map<String, dynamic>? data = snapshot.data?.data();
+            final String? partnerId = data?['partnerId'] as String?;
+
+            return _buildCreateContent(
+              theme,
+              isProfileLoading:
+                  snapshot.connectionState == ConnectionState.waiting,
+              hasProfileError: snapshot.hasError || data == null,
+              partnerId: partnerId,
+            );
+          },
     );
   }
 }
